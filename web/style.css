@@ -39,6 +39,7 @@ section {
   border-radius: var(--radius);
   padding: 16px;
   margin-bottom: 16px;
+  overflow: hidden;
 }
 h2 {
   margin: 0 0 12px;
@@ -149,6 +150,8 @@ input[type="url"] {
   border-radius: 6px;
   font: inherit;
   font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .hint { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
 .banner {
@@ -161,7 +164,13 @@ input[type="url"] {
 .banner.err { background: #fef2f2; color: var(--danger); }
 .banner.ok { background: #f0fdf4; color: var(--ok); }
 .result-list { margin: 12px 0 0; padding: 0; list-style: none; }
-.result-list li { margin: 0 0 6px; font-size: 14px; }
+.result-list li {
+  margin: 0 0 6px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.result-list li.is-url { color: var(--text); }
 .result-list span { color: var(--muted); }
 img.shot {
   display: block;

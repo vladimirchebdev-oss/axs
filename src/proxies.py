@@ -3,9 +3,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from config import Settings
 from typing import Literal, cast, get_args
 from urllib.parse import quote, unquote, urlparse
+
+from config import Settings
 
 Protocol = Literal["http", "https", "socks5"]
 PROTOCOLS: tuple[Protocol, ...] = get_args(Protocol)
@@ -14,8 +15,6 @@ _FLAG_RE = re.compile(
     r"_(country|session|lifetime)-([^_]+)",
     re.IGNORECASE,
 )
-_LIFETIME_RE = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
-_LIFETIME_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 @dataclass(frozen=True)
@@ -30,14 +29,6 @@ class Proxy:
     session_id: str | None
     lifetime: str | None
     raw: str
-
-    def lifetime_seconds(self) -> int | None:
-        if not self.lifetime:
-            return None
-        match = _LIFETIME_RE.match(self.lifetime.strip())
-        if not match:
-            return None
-        return int(match.group(1)) * _LIFETIME_UNITS[match.group(2).lower()]
 
     def url(self, protocol: Protocol) -> str:
         user = quote(self.username, safe="")
@@ -55,6 +46,14 @@ class Proxy:
 
 class ProxyParseError(ValueError):
     pass
+
+
+def parse_protocols(raw: str) -> tuple[Protocol, ...]:
+    items = tuple(item.strip() for item in raw.split(",") if item.strip())
+    unknown = [item for item in items if item not in PROTOCOLS]
+    if unknown:
+        raise ValueError(f"unknown protocol(s): {unknown}")
+    return items or PROTOCOLS
 
 
 def _flags_from_password(password: str) -> dict[str, str]:
@@ -99,10 +98,6 @@ def _collect_lines(settings: Settings, root: Path) -> list[str]:
     if single:
         lines.append(single)
 
-    bundled = settings.opt("PROXIES")
-    if bundled:
-        lines.extend(bundled.replace(",", "\n").splitlines())
-
     file_value = settings.opt("PROXY_FILE")
     if file_value:
         path = Path(file_value)
@@ -143,9 +138,7 @@ class ProxyPool:
     def from_settings(cls, settings: Settings, root: Path) -> "ProxyPool":
         proxies = load_proxies(settings, root)
         if not proxies:
-            raise ValueError(
-                "proxy list is empty — set PROXY, PROXIES, or PROXY_FILE"
-            )
+            raise ValueError("proxy list is empty — set PROXY or PROXY_FILE")
         return cls(_proxies=proxies, _settings=settings, _root=root)
 
     @property

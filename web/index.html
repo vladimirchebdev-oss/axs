@@ -138,6 +138,20 @@
       $("shot").hidden = true;
     }
 
+    function shortUrl(raw) {
+      if (!raw) return "";
+      try {
+        const u = new URL(raw);
+        const eventId = u.searchParams.get("e");
+        const host = u.hostname.replace(/^www\./, "");
+        if (eventId) return `${host} · ${eventId}`;
+        if (u.pathname && u.pathname !== "/") return host;
+        return host;
+      } catch {
+        return raw.length > 40 ? `${raw.slice(0, 37)}…` : raw;
+      }
+    }
+
     function showOk(title, rows, shotPath) {
       $("banner").className = "banner ok";
       $("banner").textContent = title;
@@ -148,7 +162,12 @@
         const li = document.createElement("li");
         const hint = document.createElement("span");
         hint.textContent = `${label}: `;
-        li.append(hint, String(value));
+        const shown = label === "URL" ? shortUrl(value) : String(value);
+        li.append(hint, shown);
+        if (label === "URL") {
+          li.title = String(value);
+          li.classList.add("is-url");
+        }
         list.appendChild(li);
       });
       list.hidden = list.children.length === 0;

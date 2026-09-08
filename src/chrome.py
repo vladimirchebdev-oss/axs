@@ -1,18 +1,5 @@
 """Запуск Google Chrome через NoDriver.
 
-Словарь NoDriver ↔ Playwright (вы уже знаете Playwright):
-
-  uc.start()                 ≈  chromium.launch()
-  Browser                    ≈  Browser
-  Tab                        ≈  Page
-  browser.get(url)           ≈  page.goto() на первой вкладке
-  browser.create_context()   ≈  browser.new_context() + новая вкладка
-  tab.evaluate(...)          ≈  page.evaluate(...)
-  tab.save_screenshot(...)   ≈  page.screenshot(path=...)
-  tab.sleep(n)               ≈  page.wait_for_timeout(n * 1000)
-  await tab                  ≈  «подождать DOM» (специфика NoDriver)
-  uc.loop()                  ≈  свой event loop; не asyncio.run()
-
 Прокси с логином Chrome сам в --proxy-server не умеет. NoDriver поднимает
 локальный forwarder и отдаёт контексту http://127.0.0.1:порт.
 """
@@ -20,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 import sys
@@ -28,6 +16,7 @@ from urllib.parse import urlsplit
 
 import nodriver as uc
 
+from fp_spoof import apply_fp_spoof
 from proxies import Protocol, Proxy
 from user_agent import UaProfile, client_hints
 
@@ -138,7 +127,7 @@ class _ChromeConfig(uc.Config):
         return cleaned
 
 
-def _origins_for(url: str) -> list[str]:
+def origins_for(url: str) -> list[str]:
     origin = page_origin(url) if url.startswith("http") else ""
     if not origin:
         return []
@@ -206,8 +195,9 @@ async def open_url(
     locale: str | None = None,
     loc: tuple[float, float] | None = None,
     ua: UaProfile | None = None,
+    spoof_fp: bool = False,
 ) -> uc.Tab:
-    origins = _origins_for(url)
+    origins = origins_for(url)
     tab = await browser.get("about:blank")
     await match_proxy_geo(
         browser,
@@ -219,6 +209,8 @@ async def open_url(
     )
     if ua:
         await apply_user_agent(tab, ua, locale)
+    if spoof_fp:
+        await apply_fp_spoof(tab)
     await navigate_tab(tab, url)
     return tab
 
@@ -311,52 +303,43 @@ def attach_dialog_watch(tab: uc.Tab, store: dict) -> None:
     tab.add_handler(uc.cdp.page.JavascriptDialogOpening, _on_dialog)
 
 
-_SILENT_CF_JS = """
-(() => {
+_SILENT_CF = (
+    "just a moment",
+    "verifying",
+    "checking your browser",
+    "verify you are a real fan",
+)
+_SILENT_CF_JS_MARKS = ", ".join(json.dumps(item) for item in _SILENT_CF)
+_SILENT_CF_JS = f"""
+(() => {{
   const text = ((document.body && document.body.innerText) || '').toLowerCase();
-  return (
-    text.includes('verifying')
-    || text.includes('checking your browser')
-    || text.includes('just a moment')
-    || text.includes('verify you are a real fan')
-  );
-})()
+  return [{_SILENT_CF_JS_MARKS}].some((m) => text.includes(m));
+}})()
 """
-
-_CHECKBOX_JS = """
-(() => {
+_CHECKBOX_JS = f"""
+(() => {{
   const text = ((document.body && document.body.innerText) || '').toLowerCase();
-  const silent = (
-    text.includes('verifying')
-    || text.includes('checking your browser')
-    || text.includes('just a moment')
-    || text.includes('verify you are a real fan')
-  );
+  const silent = [{_SILENT_CF_JS_MARKS}].some((m) => text.includes(m));
   if (silent) return false;
   if (text.includes('verify you are human')) return true;
   const nodes = document.querySelectorAll('input[type="checkbox"], [role="checkbox"]');
-  for (const el of nodes) {
+  for (const el of nodes) {{
     if (el.offsetWidth < 8 || el.offsetHeight < 8) continue;
     const st = getComputedStyle(el);
-    if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) {
+    if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) {{
       continue;
-    }
-    const around = `${el.getAttribute('aria-label') || ''} ${el.title || ''}`.toLowerCase();
+    }}
+    const around = `${{el.getAttribute('aria-label') || ''}} ${{el.title || ''}}`.toLowerCase();
     if (around.includes('human') || around.includes('verify')) return true;
-  }
+  }}
   return false;
-})()
+}})()
 """
 
 
 def _silent_cf(text: str, title: str = "") -> bool:
     blob = f"{text} {title}".lower()
-    return (
-        "just a moment" in blob
-        or "verifying" in blob
-        or "checking your browser" in blob
-        or "verify you are a real fan" in blob
-    )
+    return any(phrase in blob for phrase in _SILENT_CF)
 
 
 async def _human_checkbox_visible(tab: uc.Tab) -> bool:
@@ -445,30 +428,15 @@ _COOKIE_SELECTORS = (
     "button[aria-label='Accept All']",
 )
 
-_COOKIE_LABELS = (
-    "Accept All",
-    "Accept all",
-    "Accept All Cookies",
-)
-
 
 async def accept_cookies(tab: uc.Tab, seconds: float = 15) -> bool:
-    """Баннер AXS: кнопка Accept All (OneTrust и текстовый поиск)."""
+    """Баннер AXS: OneTrust-селектор, иначе JS по тексту Accept All."""
     deadline = seconds
     elapsed = 0.0
     while elapsed < deadline:
         for selector in _COOKIE_SELECTORS:
             try:
                 button = await tab.select(selector, timeout=0.4)
-            except Exception:
-                button = None
-            if button:
-                await button.click()
-                await tab.sleep(0.8)
-                return True
-        for label in _COOKIE_LABELS:
-            try:
-                button = await tab.find(label, best_match=True, timeout=0.6)
             except Exception:
                 button = None
             if button:

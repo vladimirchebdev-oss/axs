@@ -1,14 +1,14 @@
-# Тесты: без экрана, Chrome headless, меньше RAM. Сдача ТЗ — docker-compose.yml
+# Тесты: экран VNC :6080 + UI :8080. Сдача ТЗ — docker-compose.yml
 # Сначала: docker compose down
-# Затем: docker compose -f docker-compose.headless.yml up -d --build
+# Затем: docker compose -f docker-compose.test.yml up -d --build
 services:
   axs:
     build:
       context: .
-      dockerfile: Dockerfile.headless
+      dockerfile: Dockerfile.test
       args:
         CHROME_VERSION: ${CHROME_DEB_VERSION:-152.0.7977.82-1}
-    image: task-axs:chrome-152-headless
+    image: task-axs:chrome-152-test
     env_file:
       - .env
     environment:
@@ -16,12 +16,15 @@ services:
       PROFILE_DIR: profile
       SCREENSHOTS_DIR: screenshots
       LOGS_DIR: logs
-      HEADLESS: "1"
-      VNC: "0"
+      HEADLESS: "0"
+      VNC: "1"
+      SPOOF_FP: "0"
       SERVICE_HOST: 0.0.0.0
       SERVICE_PORT: "8080"
+      DISPLAY: ":99"
     ports:
       - "8080:8080"
+      - "6080:6080"
     volumes:
       - ./screenshots:/app/screenshots
       - ./logs:/app/logs
@@ -29,7 +32,7 @@ services:
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
       - ./web:/app/web:ro
-    shm_size: "1gb"
+    shm_size: "2gb"
     init: true
     user: "1000:1000"
     cap_add:

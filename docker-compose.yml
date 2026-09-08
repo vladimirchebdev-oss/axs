@@ -1,4 +1,5 @@
-# Production: экран VNC :6080 + UI :8080. Для тестов без экрана — docker-compose.headless.yml
+# Production: headed Chrome + Xvfb, без VNC. UI :8080, скрин в screenshots/.
+# Для экрана: docker compose -f docker-compose.test.yml up -d --build
 services:
   axs:
     build:
@@ -14,13 +15,13 @@ services:
       SCREENSHOTS_DIR: screenshots
       LOGS_DIR: logs
       HEADLESS: "0"
-      VNC: "1"
+      VNC: "0"
+      SPOOF_FP: "0"
       SERVICE_HOST: 0.0.0.0
       SERVICE_PORT: "8080"
       DISPLAY: ":99"
     ports:
       - "8080:8080"
-      - "6080:6080"
     volumes:
       - ./screenshots:/app/screenshots
       - ./logs:/app/logs
@@ -28,7 +29,7 @@ services:
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
       - ./web:/app/web:ro
-    shm_size: "2gb"
+    shm_size: "1gb"
     init: true
     user: "1000:1000"
     cap_add:

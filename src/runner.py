@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from chrome import (
     accept_cookies,
@@ -14,6 +16,7 @@ from chrome import (
     match_proxy_geo,
     navigate_tab,
     open_url,
+    origins_for,
     page_origin,
     page_proxy_dead,
     session_profile,
@@ -32,67 +35,64 @@ from user_agent import (
     ua_for_open,
 )
 
-_current_browser = None
-_stop_requested = False
-_bound_proxy: Proxy | None = None
-_bound_ip = None
-_bound_session = None
-_bound_protocol: Protocol = "http"
-_dialog: dict = {}
-_fail_streak = 0
-_dead_reason = None
-_phase = ""
-_current_tab = None
-_bound_meta: dict = {}
+
+@dataclass
+class _Session:
+    browser: object | None = None
+    tab: object | None = None
+    proxy: Proxy | None = None
+    ip: str | None = None
+    session_id: str | None = None
+    protocol: Protocol = "http"
+    meta: dict = field(default_factory=dict)
+    dialog: dict = field(default_factory=dict)
+    fail_streak: int = 0
+    dead_reason: str | None = None
+    phase: str = ""
+    stop_requested: bool = False
+
+
+_live = _Session()
 
 
 def browser_alive() -> bool:
-    return _current_browser is not None
+    return _live.browser is not None
 
 
 def set_phase(name: str) -> None:
-    global _phase
-    _phase = name
-
-
-def current_phase() -> str:
-    return _phase
+    _live.phase = name
 
 
 def _clear_bind() -> None:
-    global _bound_proxy, _bound_ip, _bound_session, _bound_protocol, _fail_streak, _dead_reason
-    global _phase, _current_tab, _bound_meta
-    _bound_proxy = None
-    _bound_ip = None
-    _bound_session = None
-    _bound_protocol = "http"
-    _fail_streak = 0
-    _phase = ""
-    _current_tab = None
-    _bound_meta = {}
-    _dialog.clear()
+    _live.proxy = None
+    _live.ip = None
+    _live.session_id = None
+    _live.protocol = "http"
+    _live.fail_streak = 0
+    _live.phase = ""
+    _live.tab = None
+    _live.meta = {}
+    _live.dialog.clear()
 
 
 def _bind_session(proxy: Proxy, ip: str | None, protocol: Protocol = "http") -> None:
-    global _bound_proxy, _bound_ip, _bound_session, _bound_protocol, _fail_streak, _dead_reason
-    _bound_proxy = proxy
-    _bound_ip = ip
-    _bound_session = proxy.session_id
-    _bound_protocol = protocol
-    _fail_streak = 0
-    _dead_reason = None
-    _dialog.clear()
+    _live.proxy = proxy
+    _live.ip = ip
+    _live.session_id = proxy.session_id
+    _live.protocol = protocol
+    _live.fail_streak = 0
+    _live.dead_reason = None
+    _live.dialog.clear()
 
 
 def last_dead_reason() -> str | None:
-    return _dead_reason
+    return _live.dead_reason
 
 
 def stop_current() -> bool:
     """Остановить живой Chrome. Вызывается из кнопки «Остановить»."""
-    global _current_browser, _stop_requested
-    _stop_requested = True
-    browser = _current_browser
+    _live.stop_requested = True
+    browser = _live.browser
     _clear_bind()
     if browser is None:
         return False
@@ -100,7 +100,7 @@ def stop_current() -> bool:
         browser.stop()
     except Exception:
         pass
-    _current_browser = None
+    _live.browser = None
     return True
 
 
@@ -120,13 +120,13 @@ def proxy_info(pool: ProxyPool) -> dict:
         "session": proxy.session_id,
         "host": proxy.host,
         "scheme": proxy.scheme,
-        "protocol": _bound_protocol if browser_alive() else None,
-        "browser_session": _bound_session,
-        "bound_ip": _bound_ip if browser_alive() else None,
+        "protocol": _live.protocol if browser_alive() else None,
+        "browser_session": _live.session_id,
+        "bound_ip": _live.ip if browser_alive() else None,
         "proxy_live": browser_alive(),
-        "dead_reason": _dead_reason,
+        "dead_reason": _live.dead_reason,
         "dead_count": len(dead_sessions(session_store_path(pool.settings))),
-        "phase": _phase,
+        "phase": _live.phase,
     }
 
 
@@ -146,7 +146,6 @@ async def _finish_tab(
     loc: tuple[float, float] | None,
     accept_banner: bool = True,
 ) -> tuple[str, str, str, object, Path]:
-    global _dead_reason
     state = "ip-check"
     if not ip_check:
         state = await wait_ready(tab, on_state=set_phase)
@@ -161,13 +160,13 @@ async def _finish_tab(
                 origins=[page_origin(current)],
             )
         if state in {"cf_checkbox", "cloudflare", "bot_wall", "restricted"}:
-            _dead_reason = f"cloudflare: {state}"
+            _live.dead_reason = f"cloudflare: {state}"
             remember_dead(
                 store,
                 session_id=session_id,
                 ip=ip,
                 ua_name=ua_name,
-                reason=_dead_reason or state,
+                reason=_live.dead_reason or state,
             )
             _log(
                 log_file,
@@ -177,7 +176,7 @@ async def _finish_tab(
             )
         if state == "shop":
             if forget_dead(store, session_id):
-                _dead_reason = None
+                _live.dead_reason = None
                 _log(log_file, f"session={session_id} снова живая — убрал из протухших")
             if accept_banner:
                 set_phase("cookies")
@@ -224,31 +223,30 @@ async def goto_page(
     ip_check: bool = False,
 ) -> dict:
     """Тот же Chrome, другой URL — без нового профиля и прокси."""
-    global _current_tab, _stop_requested
-    browser = _current_browser
+    browser = _live.browser
     if browser is None:
         raise RuntimeError("Chrome не запущен")
     log_file = settings.relpath("LOGS_DIR") / "run.log"
     settings.relpath("SCREENSHOTS_DIR").mkdir(parents=True, exist_ok=True)
     store = session_store_path(settings)
-    _stop_requested = False
-    tab = _current_tab
+    _live.stop_requested = False
+    tab = _live.tab
     if tab is None:
         tabs = getattr(browser, "tabs", None) or []
         if not tabs:
             raise RuntimeError("нет вкладки Chrome")
         tab = tabs[0]
-        _current_tab = tab
+        _live.tab = tab
     set_phase("navigate")
     _log(log_file, f"goto (same chrome): {url}")
-    meta = _bound_meta
+    meta = _live.meta
     await match_proxy_geo(
         browser,
         tab,
         timezone=meta.get("timezone"),
         locale=meta.get("locale"),
         loc=meta.get("loc"),
-        origins=_origins_safe(url),
+        origins=origins_for(url),
     )
     try:
         await navigate_tab(tab, url)
@@ -259,8 +257,8 @@ async def goto_page(
             store=store,
             log_file=log_file,
             ip_check=ip_check,
-            session_id=_bound_session,
-            ip=_bound_ip,
+            session_id=_live.session_id,
+            ip=_live.ip,
             ua_name=meta.get("ua_name"),
             geo_tz=meta.get("timezone"),
             locale=meta.get("locale"),
@@ -268,7 +266,7 @@ async def goto_page(
             accept_banner=False,
         )
     except (asyncio.CancelledError, Exception) as exc:
-        if _stop_requested or isinstance(exc, asyncio.CancelledError):
+        if _live.stop_requested or isinstance(exc, asyncio.CancelledError):
             _log(log_file, "stopped by user")
             return {"ok": True, "state": "stopped", **proxy_info(pool)}
         raise
@@ -278,20 +276,14 @@ async def goto_page(
         "title": title,
         "url": tab_url,
         "screenshot": str(Path(saved) if saved else shot),
-        "ip": meta.get("ip") or _bound_ip,
+        "ip": meta.get("ip") or _live.ip,
         "country": meta.get("country"),
         "timezone": meta.get("timezone"),
         "browser_alive": True,
         "reused": True,
-        "dead_reason": _dead_reason,
+        "dead_reason": _live.dead_reason,
         **proxy_info(pool),
     }
-
-
-def _origins_safe(url: str) -> list[str]:
-    if url.startswith("http"):
-        return [page_origin(url)]
-    return []
 
 
 async def open_page(
@@ -302,14 +294,15 @@ async def open_page(
     ip_check: bool = False,
     protocol: str = "http",
 ) -> dict:
-    proto: Protocol = protocol if protocol in PROTOCOLS else "http"
+    if protocol not in PROTOCOLS:
+        raise ValueError(f"unknown protocol: {protocol!r}")
+    proto = cast(Protocol, protocol)
     set_phase("proxy")
     log_file = settings.relpath("LOGS_DIR") / "run.log"
     settings.relpath("SCREENSHOTS_DIR").mkdir(parents=True, exist_ok=True)
 
     store = session_store_path(settings)
-    check_protos: tuple[Protocol, ...] = (proto,)
-    check = acquire_valid(pool, protocols=check_protos)
+    check = acquire_valid(pool, protocols=(proto,))
     proxy = check.proxy
     _log(
         log_file,
@@ -329,8 +322,7 @@ async def open_page(
     set_phase("chrome")
     chrome_path = settings.filepath("CHROME_PATH")
     _log(log_file, f"chrome: {chrome_path} profile: {profile_dir}")
-    global _current_browser, _stop_requested, _dead_reason
-    _stop_requested = False
+    _live.stop_requested = False
     browser = await start_chrome(
         chrome_path=chrome_path,
         profile_dir=profile_dir,
@@ -342,10 +334,9 @@ async def open_page(
         locale=settings.need("BROWSER_LANG"),
         proxy_protocol=proto,
     )
-    _current_browser = browser
+    _live.browser = browser
     _bind_session(proxy, check.ip, proto)
-    global _bound_meta, _current_tab
-    _bound_meta = {
+    _live.meta = {
         "timezone": check.timezone,
         "locale": settings.need("BROWSER_LANG"),
         "loc": check.loc,
@@ -354,7 +345,7 @@ async def open_page(
         "ua_name": None,
     }
     ua_profile = ua_for_open(proxy.session_id, check.ip, store)
-    _bound_meta["ua_name"] = ua_profile.name
+    _live.meta["ua_name"] = ua_profile.name
     _log(log_file, f"ua profile={ua_profile.name} grease={ua_profile.grease}")
     keep = False
     try:
@@ -367,9 +358,10 @@ async def open_page(
             locale=settings.need("BROWSER_LANG"),
             loc=check.loc,
             ua=ua_profile,
+            spoof_fp=settings.flag("SPOOF_FP"),
         )
-        _current_tab = tab
-        attach_dialog_watch(tab, _dialog)
+        _live.tab = tab
+        attach_dialog_watch(tab, _live.dialog)
         js_tz = await tab.evaluate(
             "Intl.DateTimeFormat().resolvedOptions().timeZone",
             return_by_value=True,
@@ -390,20 +382,20 @@ async def open_page(
             locale=settings.need("BROWSER_LANG"),
             loc=check.loc,
         )
-        keep = not _stop_requested
+        keep = not _live.stop_requested
     except (asyncio.CancelledError, Exception) as exc:
-        if _stop_requested or isinstance(exc, asyncio.CancelledError):
+        if _live.stop_requested or isinstance(exc, asyncio.CancelledError):
             keep = False
             _log(log_file, "stopped by user")
             return {"ok": True, "state": "stopped", **proxy_info(pool)}
         keep = True
         raise
     finally:
-        if keep and not _stop_requested:
-            _current_browser = browser
+        if keep and not _live.stop_requested:
+            _live.browser = browser
             _log(log_file, "session kept — Chrome остаётся открытым")
         else:
-            _current_browser = None
+            _live.browser = None
             _clear_bind()
             try:
                 browser.stop()
@@ -420,14 +412,14 @@ async def open_page(
         "country": check.country,
         "timezone": check.timezone,
         "browser_alive": keep,
-        "dead_reason": _dead_reason,
+        "dead_reason": _live.dead_reason,
         **proxy_info(pool),
     }
 
 
 async def _chrome_death_signal(browser) -> str | None:
-    if _dialog.get("dialog"):
-        return f"window: {_dialog['dialog']}"
+    if _live.dialog.get("dialog"):
+        return f"window: {_live.dialog['dialog']}"
     tabs = getattr(browser, "tabs", None) or []
     for tab in tabs:
         try:
@@ -440,27 +432,25 @@ async def _chrome_death_signal(browser) -> str | None:
 
 
 def _proxy_health(settings: Settings) -> str | None:
-    global _fail_streak
-    if _bound_proxy is None:
+    if _live.proxy is None:
         return None
-    ping = ping_used(_bound_proxy, settings, protocol=_bound_protocol, timeout=12.0)
+    ping = ping_used(_live.proxy, settings, protocol=_live.protocol, timeout=12.0)
     if not ping.ok:
-        _fail_streak += 1
-        if _fail_streak >= 2:
-            return ping.error or f"{_bound_protocol} proxy failed"
+        _live.fail_streak += 1
+        if _live.fail_streak >= 2:
+            return ping.error or f"{_live.protocol} proxy failed"
         return None
-    _fail_streak = 0
-    if _bound_ip and ping.ip and ping.ip != _bound_ip:
-        return f"ip changed {_bound_ip} -> {ping.ip}"
+    _live.fail_streak = 0
+    if _live.ip and ping.ip and ping.ip != _live.ip:
+        return f"ip changed {_live.ip} -> {ping.ip}"
     return None
 
 
 async def watch_live_session(settings: Settings) -> None:
-    """Пока Chrome открыт: проверяем живой IP и окно ошибки. lifetime из файла не смотрим."""
-    global _dead_reason
+    """Пока Chrome открыт: проверяем живой IP и окно ошибки."""
     while True:
         await asyncio.sleep(20)
-        browser = _current_browser
+        browser = _live.browser
         if browser is None:
             continue
         reason = await _chrome_death_signal(browser)
@@ -468,11 +458,11 @@ async def watch_live_session(settings: Settings) -> None:
             reason = await asyncio.to_thread(_proxy_health, settings)
         if not reason:
             continue
-        _dead_reason = reason
+        _live.dead_reason = reason
         remember_dead(
             session_store_path(settings),
-            session_id=_bound_session,
-            ip=_bound_ip,
+            session_id=_live.session_id,
+            ip=_live.ip,
             ua_name=None,
             reason=reason,
         )

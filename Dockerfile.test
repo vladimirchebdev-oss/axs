@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Тесты: без экрана, Chrome headless, меньше RAM. Не для сдачи ТЗ — см. Dockerfile.
+# Тесты: тот же headed Chrome + Xvfb, плюс VNC/noVNC чтобы смотреть экран.
 
 FROM python:3.12-slim-bookworm AS wheels
 WORKDIR /build
@@ -10,16 +10,19 @@ FROM python:3.12-slim-bookworm
 ARG CHROME_VERSION=152.0.7977.82-1
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
     PATH=/home/axs/.local/bin:$PATH \
     CHROME_PATH=/usr/bin/google-chrome \
     CHROME_VERSION=${CHROME_VERSION} \
     PROFILE_DIR=profile \
     SCREENSHOTS_DIR=screenshots \
     LOGS_DIR=logs \
-    HEADLESS=1 \
-    VNC=0 \
+    HEADLESS=0 \
+    VNC=1 \
+    SPOOF_FP=0 \
     SERVICE_HOST=0.0.0.0 \
     SERVICE_PORT=8080 \
+    DISPLAY=:99 \
     LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
     DEBIAN_FRONTEND=noninteractive
@@ -31,6 +34,11 @@ RUN apt-get update \
         fonts-noto-core \
         locales \
         wget \
+        xvfb \
+        openbox \
+        novnc \
+        websockify \
+        x11vnc \
     && wget -q -O /tmp/chrome.deb \
         "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_amd64.deb" \
     && apt-get install -y --no-install-recommends /tmp/chrome.deb \
@@ -47,14 +55,15 @@ WORKDIR /app
 COPY src ./src
 COPY scripts ./scripts
 COPY web ./web
-COPY docker/entrypoint-headless.sh /entrypoint.sh
+COPY docker/entrypoint-test.sh /entrypoint.sh
 COPY config/proxies.example.txt ./config/proxies.example.txt
 RUN chmod +x /entrypoint.sh \
-    && mkdir -p /app/screenshots /app/logs /app/profile \
+    && mkdir -p /app/screenshots /app/logs /app/profile /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix \
     && chown -R axs:axs /app /home/axs
 USER axs
 
-EXPOSE 8080
+EXPOSE 8080 6080
 HEALTHCHECK --interval=20s --timeout=5s --retries=5 --start-period=20s \
     CMD wget -qO- http://127.0.0.1:8080/health || exit 1
 ENTRYPOINT ["/entrypoint.sh"]

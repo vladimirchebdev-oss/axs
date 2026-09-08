@@ -10,16 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from config import get_settings  # noqa: E402
-from proxies import PROTOCOLS, Protocol, ProxyPool  # noqa: E402
+from proxies import ProxyPool, parse_protocols  # noqa: E402
 from proxy_check import acquire_valid, validate_proxy  # noqa: E402
-
-
-def _parse_protocols(raw: str) -> tuple[Protocol, ...]:
-    items = tuple(item.strip() for item in raw.split(",") if item.strip())
-    unknown = [item for item in items if item not in PROTOCOLS]
-    if unknown:
-        raise SystemExit(f"unknown protocol(s): {unknown}; use http,https,socks5")
-    return items or PROTOCOLS
 
 
 def _print_check(check) -> None:
@@ -49,7 +41,7 @@ def main() -> int:
 
     settings = get_settings()
     pool = ProxyPool.from_settings(settings, ROOT)
-    protocols = _parse_protocols(args.protocols)
+    protocols = parse_protocols(args.protocols)
 
     print(f"loaded proxies: {len(pool)} (env and/or PROXY_FILE)")
     print(f"protocols: {', '.join(protocols)}")

@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from config import get_settings  # noqa: E402
-from proxies import PROTOCOLS, Protocol, ProxyPool  # noqa: E402
+from proxies import PROTOCOLS, ProxyPool, parse_protocols  # noqa: E402
 from proxy_check import validate_proxy  # noqa: E402
 from runner import (  # noqa: E402
     browser_alive,
@@ -48,28 +48,13 @@ from runner import (  # noqa: E402
 LOOP: asyncio.AbstractEventLoop | None = None
 BUSY = threading.Lock()
 JOB: asyncio.Future | None = None
+SETTINGS = None
+POOL = None
 
 
-def _settings_pool():
+def _boot():
     settings = get_settings()
     return settings, ProxyPool.from_settings(settings, ROOT)
-
-
-SETTINGS, POOL = _settings_pool()
-
-
-def _call(coro, timeout: float = 180):
-    if LOOP is None:
-        raise RuntimeError("event loop is not running")
-    return asyncio.run_coroutine_threadsafe(coro, LOOP).result(timeout=timeout)
-
-
-def _protocols(raw: str) -> tuple[Protocol, ...]:
-    items = tuple(item.strip() for item in raw.split(",") if item.strip())
-    unknown = [item for item in items if item not in PROTOCOLS]
-    if unknown:
-        raise ValueError(f"unknown protocol(s): {unknown}")
-    return items or PROTOCOLS
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -135,8 +120,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "browser_alive": browser_alive(),
                     "dead_reason": last_dead_reason(),
-                    "vnc": (SETTINGS.opt("VNC") or "1").lower()
-                    in {"1", "true", "yes", "on"},
+                    "vnc": SETTINGS.flag("VNC"),
                     **proxy_info(POOL),
                 },
             )
@@ -178,7 +162,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             if path == "/check":
-                protocols = _protocols(query.get("protocols", "http,https,socks5"))
+                protocols = parse_protocols(query.get("protocols", "http,https,socks5"))
                 check = validate_proxy(
                     POOL.current(), SETTINGS, protocols=protocols
                 )
@@ -224,13 +208,18 @@ class Handler(BaseHTTPRequestHandler):
                             LOOP,
                         )
                     else:
+                        protocol = (query.get("protocol") or "").strip()
+                        if protocol not in PROTOCOLS:
+                            raise ValueError(
+                                "protocol is required: http, https, or socks5"
+                            )
                         JOB = asyncio.run_coroutine_threadsafe(
                             open_page(
                                 POOL,
                                 SETTINGS,
                                 url=url,
                                 ip_check=ip_check,
-                                protocol=query.get("protocol") or "http",
+                                protocol=protocol,
                             ),
                             LOOP,
                         )
@@ -251,9 +240,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    global LOOP
-    host = SETTINGS.opt("SERVICE_HOST") or "0.0.0.0"
-    port = int(SETTINGS.opt("SERVICE_PORT") or "8080")
+    global LOOP, SETTINGS, POOL
+    SETTINGS, POOL = _boot()
+    host = SETTINGS.need("SERVICE_HOST")
+    port = SETTINGS.integer("SERVICE_PORT")
     server = ThreadingHTTPServer((host, port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

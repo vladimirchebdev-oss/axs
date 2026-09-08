@@ -3,6 +3,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+REQUIRED = (
+    "SOCKS_PORT",
+    "EXPECT_COUNTRY",
+    "CHECK_URL",
+    "HTTP_CHECK_URL",
+    "GEO_URL",
+    "CHROME_PATH",
+    "CHROME_VERSION",
+    "HEADLESS",
+    "VNC",
+    "SPOOF_FP",
+    "PROFILE_DIR",
+    "SCREENSHOTS_DIR",
+    "LOGS_DIR",
+    "BROWSER_LANG",
+    "WINDOW_SIZE",
+    "PAGE_URL",
+    "SERVICE_HOST",
+    "SERVICE_PORT",
+)
+
 
 def load_env(path: Path | None = None) -> dict[str, str]:
     env_path = path or (ROOT / ".env")
@@ -51,4 +72,14 @@ class Settings:
 
 
 def get_settings() -> Settings:
-    return Settings(load_env())
+    data = load_env()
+    missing = [key for key in REQUIRED if not data.get(key, "").strip()]
+    if missing:
+        raise ValueError(f"missing in env: {', '.join(missing)}")
+    settings = Settings(data)
+    settings.integer("SOCKS_PORT")
+    settings.integer("SERVICE_PORT")
+    settings.filepath("CHROME_PATH")
+    if not settings.opt("PROXY") and not settings.opt("PROXY_FILE"):
+        raise ValueError("set PROXY or PROXY_FILE")
+    return settings

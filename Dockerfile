@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Production (сдача ТЗ): Chrome 152 + Xvfb/noVNC, не headless.
+# Production: Chrome 152 + Xvfb/openbox, без VNC. Самый лёгкий рабочий вариант.
 
 FROM python:3.12-slim-bookworm AS wheels
 WORKDIR /build
@@ -10,6 +10,7 @@ FROM python:3.12-slim-bookworm
 ARG CHROME_VERSION=152.0.7977.82-1
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
     PATH=/home/axs/.local/bin:$PATH \
     CHROME_PATH=/usr/bin/google-chrome \
     CHROME_VERSION=${CHROME_VERSION} \
@@ -17,6 +18,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SCREENSHOTS_DIR=screenshots \
     LOGS_DIR=logs \
     HEADLESS=0 \
+    VNC=0 \
+    SPOOF_FP=0 \
     SERVICE_HOST=0.0.0.0 \
     SERVICE_PORT=8080 \
     DISPLAY=:99 \
@@ -24,19 +27,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LANGUAGE=en_US:en \
     DEBIAN_FRONTEND=noninteractive
 
-# Один слой: зависимости + запиненный Chrome 152 (не google-chrome-stable из floating repo).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         fonts-liberation \
-        fonts-noto-core \
         locales \
         wget \
         xvfb \
         openbox \
-        novnc \
-        websockify \
-        x11vnc \
     && wget -q -O /tmp/chrome.deb \
         "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_amd64.deb" \
     && apt-get install -y --no-install-recommends /tmp/chrome.deb \
@@ -61,7 +59,7 @@ RUN chmod +x /entrypoint.sh \
     && chown -R axs:axs /app /home/axs
 USER axs
 
-EXPOSE 8080 6080
+EXPOSE 8080
 HEALTHCHECK --interval=20s --timeout=5s --retries=5 --start-period=20s \
     CMD wget -qO- http://127.0.0.1:8080/health || exit 1
 ENTRYPOINT ["/entrypoint.sh"]
