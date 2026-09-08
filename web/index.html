@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AXS</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h1>AXS</h1>
+    <p class="lead">Прокси и запуск страницы. Контейнер не перезапускается.</p>
+
+    <section aria-labelledby="proxy-title">
+      <h2 id="proxy-title">Текущий прокси</h2>
+      <dl class="meta" id="proxy-meta">
+        <div><dt>Сессия</dt><dd id="f-session">—</dd></div>
+        <div><dt>Индекс</dt><dd id="f-index">—</dd></div>
+        <div><dt>Хост</dt><dd id="f-host">—</dd></div>
+        <div><dt>Протокол</dt><dd id="f-scheme">—</dd></div>
+        <div><dt>IP в Chrome</dt><dd id="f-bound">—</dd></div>
+        <div><dt>Прокси</dt><dd id="f-live">—</dd></div>
+        <div><dt>Протухшие</dt><dd id="f-dead">—</dd></div>
+      </dl>
+      <p class="hint" id="proxy-empty" hidden>Список прокси пуст или сервис ещё не ответил.</p>
+    </section>
+
+    <section aria-labelledby="actions-title">
+      <h2 id="actions-title">Действия</h2>
+      <div class="row">
+        <button type="button" id="btn-rotate-prev">Предыдущий прокси</button>
+        <button type="button" id="btn-rotate-next">Следующий прокси</button>
+        <button type="button" id="btn-reload">Обновить список</button>
+        <button type="button" id="btn-check">Проверить выбранный протокол</button>
+        <button type="button" id="btn-check-all">Проверить все порты</button>
+      </div>
+      <fieldset class="proto">
+        <legend>Протокол прокси</legend>
+        <div class="proto-list" role="radiogroup" aria-label="Протокол прокси">
+          <label><input type="radio" name="protocol" value="http" checked> HTTP</label>
+          <label><input type="radio" name="protocol" value="https"> HTTPS</label>
+          <label><input type="radio" name="protocol" value="socks5"> SOCKS5</label>
+        </div>
+        <p class="hint">HTTP/HTTPS — порт 12321. SOCKS5 — 32325. Этим же каналом пойдёт Chrome.</p>
+      </fieldset>
+      <label for="page-url">Адрес события</label>
+      <input id="page-url" type="url" spellcheck="false"
+        placeholder="https://shop.axs.com/?c=axs&amp;e=...">
+      <div class="row spaced">
+        <button type="button" class="primary" id="btn-open">Открыть AXS</button>
+        <button type="button" id="btn-ip">Проверить IP в Chrome</button>
+        <button type="button" class="danger" id="btn-stop" disabled>Остановить</button>
+      </div>
+      <p class="hint">Если Chrome уже открыт, «Открыть AXS» переходит по новому адресу в том же окне — Остановить не нужно. Пока ждём скрин, в результате видно этап (Cloudflare / магазин / куки). Протухшие сессии — logs/session-store.json.</p>
+    </section>
+
+    <section aria-labelledby="result-title">
+      <h2 id="result-title">Результат</h2>
+      <div id="banner" class="banner empty" role="status" aria-live="polite">
+        Ещё ничего не запускали. Сначала можно проверить прокси.
+      </div>
+      <ul class="result-list" id="details" hidden></ul>
+      <img class="shot" id="shot" alt="Скриншот страницы" hidden>
+    </section>
+
+    <section aria-labelledby="screen-title" id="screen-section">
+      <h2 id="screen-title">Экран в Docker</h2>
+      <p class="hint">Пока не нажали «Открыть AXS», рабочий стол пустой. <a class="screen-link" id="screen-link" target="_blank" rel="noopener">Открыть на всю вкладку</a></p>
+      <iframe class="screen" id="screen" title="Экран Chrome внутри контейнера"></iframe>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const buttons = [
+      "btn-rotate-prev", "btn-rotate-next", "btn-reload",
+      "btn-check", "btn-check-all", "btn-open", "btn-ip",
+    ];
+    const PHASE_TEXT = {
+      proxy: "Проверяем прокси…",
+      chrome: "Запускаем Chrome…",
+      navigate: "Открываем страницу в Chrome…",
+      cloudflare: "На экране Cloudflare — ждём тихий проход…",
+      loading: "Страница ещё грузится…",
+      queue: "Очередь AXS…",
+      shop: "Магазин уже на экране. Куки и скриншот — ещё несколько секунд.",
+      cookies: "Магазин открыт, жмём Accept All…",
+      settle: "Ждём карту и DOM…",
+      screenshot: "Сохраняем скриншот…",
+      ready: "Готово.",
+      "ip-check": "Проверка IP в Chrome…",
+    };
+    let opening = false;
+
+    function applyPhase(phase) {
+      if (!opening || !phase) return;
+      $("banner").className = "banner busy";
+      $("banner").textContent = PHASE_TEXT[phase] || `Сейчас: ${phase}`;
+    }
+
+    function setBusy(on, text) {
+      buttons.forEach((id) => { $(id).disabled = on; });
+      $("page-url").disabled = on;
+      $("btn-stop").disabled = !on;
+      document.querySelectorAll('input[name="protocol"]').forEach((el) => { el.disabled = on; });
+      if (on) {
+        $("banner").className = "banner busy";
+        $("banner").textContent = text || "Ждём ответ…";
+      }
+    }
+
+    function selectedProtocol() {
+      const el = document.querySelector('input[name="protocol"]:checked');
+      return el ? el.value : "http";
+    }
+
+    function fillProxy(data) {
+      const empty = !data || data.total === 0;
+      $("proxy-empty").hidden = !empty;
+      $("f-session").textContent = data.session || "—";
+      $("f-index").textContent =
+        data.total != null ? `${(data.index ?? 0) + 1} / ${data.total}` : "—";
+      $("f-host").textContent = data.host || "—";
+      $("f-scheme").textContent = data.protocol || selectedProtocol();
+      $("f-bound").textContent = data.bound_ip || "—";
+      $("f-live").textContent = data.browser_alive
+        ? "жив"
+        : (data.dead_reason ? `слетел: ${data.dead_reason}` : "нет сессии");
+      $("f-dead").textContent =
+        data.dead_count != null ? String(data.dead_count) : "—";
+      const screen = $("screen-section");
+      if (screen) screen.hidden = data.vnc === false;
+    }
+
+    function showError(message) {
+      $("banner").className = "banner err";
+      $("banner").textContent = message;
+      $("details").hidden = true;
+      $("shot").hidden = true;
+    }
+
+    function showOk(title, rows, shotPath) {
+      $("banner").className = "banner ok";
+      $("banner").textContent = title;
+      const list = $("details");
+      list.innerHTML = "";
+      rows.forEach(([label, value]) => {
+        if (value == null || value === "") return;
+        const li = document.createElement("li");
+        const hint = document.createElement("span");
+        hint.textContent = `${label}: `;
+        li.append(hint, String(value));
+        list.appendChild(li);
+      });
+      list.hidden = list.children.length === 0;
+      if (shotPath) {
+        const name = shotPath.split(/[/\\]/).pop();
+        $("shot").src = `/shot/${encodeURIComponent(name)}?t=${Date.now()}`;
+        $("shot").hidden = false;
+      } else {
+        $("shot").hidden = true;
+      }
+    }
+
+    async function api(method, path) {
+      const res = await fetch(path, { method });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && !data.error) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      if (data.ok === false) {
+        throw new Error(data.error || "ошибка");
+      }
+      return data;
+    }
+
+    async function refreshStatus() {
+      try {
+        const data = await api("GET", "/status");
+        fillProxy(data);
+        if (!opening) $("btn-stop").disabled = !data.browser_alive;
+        applyPhase(data.phase);
+        if (!opening && !data.browser_alive && data.dead_reason) {
+          showOk(`Прокси слетел: ${data.dead_reason}. Следующий Open — новая сессия.`, []);
+        }
+      } catch (err) {
+        showError(err.message);
+      }
+    }
+
+    async function rotateProxy(dir) {
+      setBusy(true, dir === "prev" ? "Предыдущий прокси…" : "Следующий прокси…");
+      try {
+        const data = await api("POST", `/rotate?dir=${dir}`);
+        fillProxy(data);
+        showOk(
+          data.chrome_closed
+            ? "Прокси сменён, старый Chrome закрыт — нужен новый Open."
+            : (dir === "prev" ? "Прокси назад. Контейнер не перезапускался." : "Прокси вперёд. Контейнер не перезапускался."),
+          []
+        );
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    $("btn-rotate-prev").addEventListener("click", () => rotateProxy("prev"));
+    $("btn-rotate-next").addEventListener("click", () => rotateProxy("next"));
+
+    $("btn-reload").addEventListener("click", async () => {
+      setBusy(true, "Читаем файл прокси…");
+      try {
+        const data = await api("POST", "/reload");
+        fillProxy(data);
+        showOk(`Список обновлён: ${data.loaded} шт.`, []);
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    async function checkProxy(protocols, waitText) {
+      setBusy(true, waitText);
+      try {
+        const data = await api("POST", `/check?protocols=${encodeURIComponent(protocols)}`);
+        fillProxy(data);
+        const protoRows = Object.entries(data.protocols || {}).map(([name, item]) => {
+          const extra = item.ip || item.error || "";
+          return [name, item.ok ? `ok ${extra}` : `нет ${extra}`];
+        });
+        showOk(
+          data.ok ? "Прокси живой." : (data.error || "Прокси не прошёл проверку."),
+          [["IP", data.ip], ["Страна", data.country], ["Город", data.city], ["Пояс", data.timezone], ...protoRows]
+        );
+        $("banner").className = data.ok ? "banner ok" : "banner err";
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    $("btn-check").addEventListener("click", () => {
+      const proto = selectedProtocol();
+      return checkProxy(proto, `Проверяем ${proto.toUpperCase()}…`);
+    });
+    $("btn-check-all").addEventListener("click", () => {
+      return checkProxy("http,https,socks5", "Проверяем HTTP, HTTPS и SOCKS5…");
+    });
+
+    async function openPage(ipCheck) {
+      const extra = $("page-url").value.trim();
+      const params = new URLSearchParams();
+      if (ipCheck) params.set("ip_check", "1");
+      if (extra) params.set("url", extra);
+      params.set("protocol", selectedProtocol());
+      opening = true;
+      setBusy(true, ipCheck ? "Открываем проверку IP в Chrome…" : "Открываем AXS…");
+      try {
+        const data = await api("POST", `/open?${params.toString()}`);
+        fillProxy(data);
+        if (data.state === "stopped") {
+          showOk("Остановлено.", []);
+          return;
+        }
+        const stuck = ["cf_checkbox", "cloudflare", "bot_wall", "restricted", "queue"].includes(data.state);
+        const reused = data.reused
+          ? "Перешли по ссылке в том же Chrome. "
+          : "";
+        showOk(
+          data.state === "shop"
+            ? `${reused}Страница загружена. Можно открыть другой URL в этом же Chrome или Остановить.`
+            : data.state === "cf_checkbox"
+              ? "Видна галочка «Verify you are human» — не прошёл. UA сброшен. Chrome на VNC, потом новый Open."
+            : stuck
+              ? "Cloudflare не пропустил. Этот UA больше не держим. Chrome оставлен — смотри VNC или Остановить, потом новый Open."
+            : data.browser_alive
+              ? "Chrome оставлен открытым. Можно ждать или жать Остановить."
+              : `Готово: ${data.state || "ok"}`,
+          [
+            ["Состояние", data.state],
+            ["Протокол", data.protocol || selectedProtocol()],
+            ["Title", data.title],
+            ["URL", data.url],
+            ["IP", data.ip],
+            ["Страна", data.country],
+            ["Пояс", data.timezone],
+          ],
+          data.screenshot
+        );
+        if (stuck) $("banner").className = "banner err";
+        if (data.browser_alive) $("btn-stop").disabled = false;
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        opening = false;
+        setBusy(false);
+      }
+    }
+
+    $("btn-open").addEventListener("click", () => openPage(false));
+    $("btn-ip").addEventListener("click", () => openPage(true));
+    $("btn-stop").addEventListener("click", async () => {
+      $("btn-stop").disabled = true;
+      $("banner").className = "banner busy";
+      $("banner").textContent = "Останавливаем Chrome…";
+      try {
+        await api("POST", "/stop");
+      } catch (err) {
+        showError(err.message);
+      }
+    });
+
+    const vnc = `${location.protocol}//${location.hostname}:6080/vnc.html?autoconnect=1&resize=scale&reconnect=1`;
+    $("screen-link").href = vnc;
+    fetch("/status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.vnc !== false) $("screen").src = vnc;
+      })
+      .catch(() => { $("screen").src = vnc; });
+
+    refreshStatus();
+    setInterval(refreshStatus, 2000);
+  </script>
+</body>
+</html>

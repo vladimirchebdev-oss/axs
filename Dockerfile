@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1
+# Production (сдача ТЗ): Chrome 152 + Xvfb/noVNC, не headless.
+
+FROM python:3.12-slim-bookworm AS wheels
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+FROM python:3.12-slim-bookworm
+ARG CHROME_VERSION=152.0.7977.82-1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/home/axs/.local/bin:$PATH \
+    CHROME_PATH=/usr/bin/google-chrome \
+    CHROME_VERSION=${CHROME_VERSION} \
+    PROFILE_DIR=profile \
+    SCREENSHOTS_DIR=screenshots \
+    LOGS_DIR=logs \
+    HEADLESS=0 \
+    SERVICE_HOST=0.0.0.0 \
+    SERVICE_PORT=8080 \
+    DISPLAY=:99 \
+    LANG=en_US.UTF-8 \
+    LANGUAGE=en_US:en \
+    DEBIAN_FRONTEND=noninteractive
+
+# Один слой: зависимости + запиненный Chrome 152 (не google-chrome-stable из floating repo).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        fonts-liberation \
+        fonts-noto-core \
+        locales \
+        wget \
+        xvfb \
+        openbox \
+        novnc \
+        websockify \
+        x11vnc \
+    && wget -q -O /tmp/chrome.deb \
+        "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_amd64.deb" \
+    && apt-get install -y --no-install-recommends /tmp/chrome.deb \
+    && rm -f /tmp/chrome.deb \
+    && sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen \
+    && chmod 4755 /opt/google/chrome/chrome-sandbox \
+    && google-chrome --version | grep -F "152.0.7977.82" \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN useradd --create-home --uid 1000 --shell /bin/sh axs
+COPY --from=wheels /root/.local /home/axs/.local
+WORKDIR /app
+COPY src ./src
+COPY scripts ./scripts
+COPY web ./web
+COPY docker/entrypoint.sh /entrypoint.sh
+COPY config/proxies.example.txt ./config/proxies.example.txt
+RUN chmod +x /entrypoint.sh \
+    && mkdir -p /app/screenshots /app/logs /app/profile /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix \
+    && chown -R axs:axs /app /home/axs
+USER axs
+
+EXPOSE 8080 6080
+HEALTHCHECK --interval=20s --timeout=5s --retries=5 --start-period=20s \
+    CMD wget -qO- http://127.0.0.1:8080/health || exit 1
+ENTRYPOINT ["/entrypoint.sh"]

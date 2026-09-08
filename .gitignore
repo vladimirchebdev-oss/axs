@@ -1,0 +1,12 @@
+.env
+config/proxies.txt
+logs/*
+screenshots/*
+!logs/.gitkeep
+!screenshots/.gitkeep
+__pycache__/
+.venv/
+venv/
+profile/
+*.pyc
+.Python

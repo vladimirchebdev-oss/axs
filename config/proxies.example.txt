@@ -1,0 +1,2 @@
+# По одной sticky-сессии на строку. Скопируйте в config/proxies.txt (он в .gitignore).
+# TEST_TASK_1:PASSWORD_country-us_session-XXXXXXXX_lifetime-30m@geo.iproyal.com:12321

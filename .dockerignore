@@ -1,0 +1,14 @@
+.venv
+venv
+.git
+.cursor
+profile
+screenshots
+logs
+__pycache__
+*.pyc
+.env
+config/proxies.txt
+agent-transcripts
+canvases
+*.canvas.tsx
